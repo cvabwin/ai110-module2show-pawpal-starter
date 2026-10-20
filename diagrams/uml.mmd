@@ -1,15 +1,79 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
-
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Owner {
+        +string name
+        +List~Pet~ pets
+        +Dict preferences
+        +add_pet(pet) void
+        +remove_pet(pet_id) void
+        +get_pet(pet_id) Pet
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Pet {
+        +string id
+        +string name
+        +string species
+        +string breed
+        +date date_of_birth
+        +float weight
+        +List allergies
+        +List medical_conditions
+        +List~CareTask~ care_tasks
+        +add_task(task) void
+        +edit_task(task_id, updates) void
+        +remove_task(task_id) void
+        +get_tasks_for_day(date) List~CareTask~
     }
 
-    ClassName --> AnotherClass : relationship
+    class CareTask {
+        +string id
+        +string title
+        +int duration_minutes
+        +Priority priority
+        +date? scheduled_date
+        +int completed_minutes
+        +update_details(updates) void
+        +record_progress(minutes) void
+        +mark_complete() void
+        +get_remaining_minutes() int
+    }
+
+    class DailyPlan {
+        +date date
+        +int available_minutes
+        +List~CareTask~ candidate_tasks
+        +List~ScheduledItem~ scheduled_items
+        +int total_planned_minutes [property]
+        +add_item(item) void
+        +get_remaining_time() int
+        +get_unscheduled_tasks() List~CareTask~
+    }
+
+    class ScheduledItem {
+        +CareTask task
+        +int planned_minutes
+        +string reason
+        +get_remaining_task_minutes() int
+        +get_explanation() string
+    }
+
+    class Scheduler {
+        +Dict priority_weights
+        +generate_plan(pet, date, available_minutes, preferences) DailyPlan
+        +score_task(task, preferences) float
+        +explain_decision(task, planned_minutes, preferences) string
+    }
+
+    class Priority {
+        <<enumeration>>
+        low
+        medium
+        high
+    }
+
+    Owner "1" o-- "0..*" Pet : owns
+    Pet "1" *-- "0..*" CareTask : has
+    DailyPlan "1" *-- "0..*" ScheduledItem : contains
+    ScheduledItem "0..*" --> "1" CareTask : schedules
+    Scheduler ..> Pet : plans for
+    Scheduler ..> DailyPlan : generates
+    CareTask --> Priority : has

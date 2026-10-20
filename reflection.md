@@ -3,6 +3,9 @@
 ## 1. System Design
 
 **a. Initial design**
+1. **Manage pets and care tasks** — Create or select a pet, then add, edit, or remove that pet’s tasks, including duration and priority.
+2. **Generate a daily plan** — Set the available time and get an ordered plan that balances priority and duration, allows tasks to be split, and explains what was scheduled or deferred.
+3. **Track weekly care** — Review the week’s tasks and check off completed items so they aren’t scheduled again.
 
 - Briefly describe your initial UML design.
 - What classes did you include, and what responsibilities did you assign to each?
