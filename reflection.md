@@ -37,7 +37,13 @@ The design evolved to link each plan to an owner, enforce exclusive pet/task own
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
+Tradeoff: readability and speed vs. coupling.
+Gain: no repeated get_pet lookups, one grouping pass, and warning text built straight from the stored pairs.
+Cost: detect_conflicts now reads owner.pets and pet.care_tasks directly instead of going through owner.get_all_tasks() and get_pet. That ties it to how Owner and Pet store their data. If those internals change, this method has to change too.
+Cost: each slot keeps a copy of the pet name and task title, not the task object. A warning can't link back to the task, so a UI couldn't offer a "fix this" action without another lookup.
+
 - Why is that tradeoff reasonable for this scenario?
+This is this fine for a small app with one detection method. The coupling would matter more if several features needed the same traversal.
 
 ---
 

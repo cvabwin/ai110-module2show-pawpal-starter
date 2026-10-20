@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from enum import Enum
 from math import sqrt
 from typing import Mapping, Optional, Sequence
@@ -38,6 +39,7 @@ class CareTask:
     pet_id: Optional[str] = field(default=None, repr=False)
     frequency: Frequency | str = Frequency.ONCE
     completed_by_date: dict[date, int] = field(default_factory=dict, repr=False)
+    start_time: Optional[str] = None
 
     def __post_init__(self) -> None:
         """Validate and normalize task fields after initialization."""
@@ -54,6 +56,7 @@ class CareTask:
         if not isinstance(self.is_splittable, bool):
             raise TypeError("is_splittable must be a bool")
         self.pet_id = self._validate_optional_id(self.pet_id, "Pet ID")
+        self.start_time = self._validate_start_time(self.start_time)
         self.completed_by_date = self._validate_occurrence_progress(
             self.completed_by_date, self.duration_minutes
         )
@@ -122,6 +125,17 @@ class CareTask:
         return value
 
     @staticmethod
+    def _validate_start_time(value: object) -> Optional[str]:
+        """Validate an optional 24-hour "HH:MM" start time."""
+        if value is None:
+            return None
+        try:
+            parsed = datetime.strptime(value, "%H:%M")
+        except (TypeError, ValueError) as error:
+            raise ValueError("start_time must be in HH:MM format or None") from error
+        return parsed.strftime("%H:%M")
+
+    @staticmethod
     def _validate_optional_id(value: object, label: str) -> Optional[str]:
         """Validate an optional non-empty identifier."""
         if value is not None and (not isinstance(value, str) or not value.strip()):
@@ -180,6 +194,7 @@ class CareTask:
             "scheduled_date",
             "is_splittable",
             "frequency",
+            "start_time",
         }
         unexpected_fields = set(updates) - allowed_fields
         if unexpected_fields:
@@ -192,6 +207,7 @@ class CareTask:
         new_scheduled_date = self.scheduled_date
         new_is_splittable = self.is_splittable
         new_frequency = self.frequency
+        new_start_time = self.start_time
 
         if "title" in updates:
             new_title = self._validate_title(updates["title"])
@@ -210,6 +226,9 @@ class CareTask:
         if "frequency" in updates:
             new_frequency = self._validate_frequency(updates["frequency"])
 
+        if "start_time" in updates:
+            new_start_time = self._validate_start_time(updates["start_time"])
+
         if self.completed_minutes > new_duration or any(
             minutes > new_duration for minutes in self.completed_by_date.values()
         ):
@@ -223,6 +242,7 @@ class CareTask:
         self.scheduled_date = new_scheduled_date
         self.is_splittable = new_is_splittable
         self.frequency = new_frequency
+        self.start_time = new_start_time
 
     def mark_complete(self, occurrence_date: Optional[date] = None) -> None:
         """Mark a one-time task or dated recurring occurrence complete."""
@@ -698,3 +718,122 @@ class Scheduler:
             task.title.casefold() in normalized_titles
             or task.priority in normalized_priorities
         )
+
+    @staticmethod
+    def sort_by_time(tasks: Sequence[CareTask]) -> list[CareTask]:
+        """Sort tasks by "HH:MM" start time, placing untimed tasks last.
+
+        Zero-padded 24-hour strings sort correctly as plain text, so the lambda
+        key is (is_untimed, start_time): False sorts before True, which pushes
+        tasks without a start_time to the end. Returns a new list; the input is
+        left unchanged.
+        """
+        return sorted(
+            tasks, key=lambda task: (task.start_time is None, task.start_time or "")
+        )
+
+    @staticmethod
+    def filter_tasks(
+        owner: Owner,
+        pet_name: Optional[str] = None,
+        completed: Optional[bool] = None,
+    ) -> list[CareTask]:
+        """Filter an owner's tasks by pet name and/or completion status.
+
+        Args:
+            owner: Owner whose pets' tasks are searched.
+            pet_name: If given, keep only this pet's tasks (case-insensitive).
+            completed: If True keep completed tasks, if False keep incomplete
+                ones, if None ignore completion status.
+
+        Returns:
+            Matching tasks in pet order, then task order. Raises TypeError if
+            owner is not an Owner.
+        """
+        if not isinstance(owner, Owner):
+            raise TypeError("owner must be an Owner")
+        tasks: list[CareTask] = []
+        for pet in owner.pets:
+            if pet_name is not None and pet.name.casefold() != pet_name.casefold():
+                continue
+            for task in pet.care_tasks:
+                # Active recurring tasks always have future work, so are incomplete.
+                if completed is None or task.is_complete == completed:
+                    tasks.append(task)
+        return tasks
+
+    def complete_task(
+        self, owner: Owner, task_id: str, occurrence_date: Optional[date] = None
+    ) -> Optional[CareTask]:
+        """Complete a task; for daily/weekly tasks, create the next occurrence.
+
+        Args:
+            owner: Owner whose pets hold the task.
+            task_id: ID of the task to complete.
+            occurrence_date: Date being completed; defaults to today. The next
+                occurrence is due occurrence_date + 1 day (daily) or + 7 days
+                (weekly), computed with timedelta.
+
+        Returns:
+            The newly created CareTask for recurring tasks, or None for
+            one-time tasks. The finished occurrence is retired as a completed
+            one-time record so only the new task stays active.
+
+        Raises:
+            KeyError: If no task has the given ID.
+        """
+        task = next((t for t in owner.get_all_tasks() if t.id == task_id), None)
+        if task is None:
+            raise KeyError(f"No task found with ID: {task_id}")
+        if task.frequency is Frequency.ONCE:
+            task.mark_complete()
+            return None
+
+        occurrence_date = occurrence_date or date.today()
+        step = timedelta(days=1 if task.frequency is Frequency.DAILY else 7)
+        next_task = CareTask(
+            title=task.title,
+            duration_minutes=task.duration_minutes,
+            priority=task.priority,
+            scheduled_date=occurrence_date + step,
+            is_splittable=task.is_splittable,
+            frequency=task.frequency,
+            start_time=task.start_time,
+        )
+        # Retire the finished occurrence as a completed one-time record so the
+        # new task is the only active copy of the recurring series.
+        task.frequency = Frequency.ONCE
+        task.scheduled_date = occurrence_date
+        task.completed_by_date = {}
+        task.completed_minutes = task.duration_minutes
+        owner.get_pet(task.pet_id).add_task(next_task)
+        return next_task
+
+    def detect_conflicts(self, owner: Owner) -> list[str]:
+        """Return warnings for tasks sharing a date and start time.
+
+        Lightweight check: groups incomplete, timed tasks by (scheduled_date,
+        start_time) in a single pass and reports any group of two or more. Each
+        message says whether the clash is for the "same pet" or "different
+        pets". Never raises; returns an empty list when there are no conflicts.
+        Task durations are not compared, only exact start times.
+        """
+        slots: defaultdict[tuple[Optional[date], str], list[tuple[str, str]]] = (
+            defaultdict(list)
+        )
+        for pet in owner.pets:
+            for task in pet.care_tasks:
+                if task.start_time is not None and not task.is_complete:
+                    slots[(task.scheduled_date, task.start_time)].append(
+                        (pet.name, task.title)
+                    )
+
+        warnings = []
+        for (slot_date, start), entries in slots.items():
+            if len(entries) < 2:
+                continue
+            scope = "same pet" if len({pet for pet, _ in entries}) == 1 else "different pets"
+            names = ", ".join(f"{pet}: {title}" for pet, title in entries)
+            when = f"{slot_date} " if slot_date else ""
+            warnings.append(f"Conflict ({scope}) at {when}{start}: {names}")
+        return warnings

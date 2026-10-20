@@ -86,14 +86,36 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
+All four features live on `Scheduler` in `pawpal_system.py`, and `main.py` demos each one.
 
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+| Feature            | Method                         | Notes                                |
+|--------------------|--------------------------------|--------------------------------------|
+| Sorting            | `Scheduler.sort_by_time()`     | By "HH:MM" start time                |
+| Filtering          | `Scheduler.filter_tasks()`     | By pet name and/or completion status |
+| Conflict detection | `Scheduler.detect_conflicts()` | Same date and start time             |
+| Recurring tasks    | `Scheduler.complete_task()`    | Daily (+1 day) and weekly (+7 days)  |
+
+### Sorting: `Scheduler.sort_by_time(tasks)`
+Sorts tasks by their optional `start_time` ("HH:MM", 24-hour). Zero-padded times sort correctly as plain text, so the key is a lambda, `(start_time is None, start_time or "")`. Tasks without a start time go last. It returns a new list and leaves the input unchanged.
+
+### Filtering: `Scheduler.filter_tasks(owner, pet_name=None, completed=None)`
+- `pet_name` keeps only that pet's tasks (case-insensitive).
+- `completed=True` keeps finished tasks, `completed=False` keeps open ones, and `None` ignores status.
+- The filters combine, and the result can be passed to `sort_by_time()`, for example "Mochi's open tasks, in time order".
+
+### Conflict detection: `Scheduler.detect_conflicts(owner)`
+A lightweight check that returns warning strings and never raises.
+- It groups incomplete, timed tasks by `(scheduled_date, start_time)` in one pass.
+- Any group of two or more produces a warning labelled "same pet" or "different pets", for example `Conflict (same pet) at 2026-10-20 17:00: Mochi: Training, Mochi: Vet call`.
+- An empty list means no conflicts.
+- **Limitation:** only exact start times are compared, not durations, and a recurring task is checked only on its anchor date.
+
+### Recurring tasks: `Scheduler.complete_task(owner, task_id, occurrence_date=None)`
+- A one-time task is simply marked complete.
+- Completing a **daily** task creates the next occurrence due `occurrence_date + timedelta(days=1)`. A **weekly** task uses `timedelta(days=7)`.
+- `occurrence_date` defaults to today. The new task copies the title, duration, priority, splittable flag, frequency and start time, and is added to the same pet.
+- The finished occurrence becomes a completed one-time record, so the new task is the only active copy of the series.
+- Weekly tasks need a `scheduled_date` as an anchor.
 
 ## 📸 Demo Walkthrough
 
