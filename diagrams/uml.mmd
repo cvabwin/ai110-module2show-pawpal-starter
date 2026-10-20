@@ -1,15 +1,18 @@
 classDiagram
     class Owner {
+        +string id
         +string name
         +List~Pet~ pets
         +Dict preferences
         +add_pet(pet) void
         +remove_pet(pet_id) void
         +get_pet(pet_id) Pet
+        +get_all_tasks() List~CareTask~
     }
 
     class Pet {
         +string id
+        +Owner? owner
         +string name
         +string species
         +string breed
@@ -29,17 +32,23 @@ classDiagram
         +string title
         +int duration_minutes
         +Priority priority
+        +Frequency frequency
         +date? scheduled_date
         +int completed_minutes
+        +Dict~date, int~ completed_by_date
+        +bool is_splittable
+        +string? pet_id
         +update_details(updates) void
-        +record_progress(minutes) void
-        +mark_complete() void
-        +get_remaining_minutes() int
+        +record_progress(minutes, occurrence_date) void
+        +mark_complete(occurrence_date) void
+        +get_remaining_minutes(occurrence_date) int
+        +is_scheduled_for_date(occurrence_date) bool
     }
 
     class DailyPlan {
         +date date
         +int available_minutes
+        +string? owner_id
         +List~CareTask~ candidate_tasks
         +List~ScheduledItem~ scheduled_items
         +int total_planned_minutes [property]
@@ -52,13 +61,15 @@ classDiagram
         +CareTask task
         +int planned_minutes
         +string reason
+        +date? task_date
+        +int remaining_minutes_before_plan
         +get_remaining_task_minutes() int
         +get_explanation() string
     }
 
     class Scheduler {
         +Dict priority_weights
-        +generate_plan(pet, date, available_minutes, preferences) DailyPlan
+        +generate_plan(owner, date, available_minutes, preferences) DailyPlan
         +score_task(task, preferences) float
         +explain_decision(task, planned_minutes, preferences) string
     }
@@ -70,10 +81,20 @@ classDiagram
         high
     }
 
-    Owner "1" o-- "0..*" Pet : owns
+    class Frequency {
+        <<enumeration>>
+        once
+        daily
+        weekly
+    }
+
+    Owner "1" o-- "0..*" Pet : owns exclusively
     Pet "1" *-- "0..*" CareTask : has
+    Owner ..> CareTask : get_all_tasks
     DailyPlan "1" *-- "0..*" ScheduledItem : contains
     ScheduledItem "0..*" --> "1" CareTask : schedules
-    Scheduler ..> Pet : plans for
+    DailyPlan "1" o-- "0..*" CareTask : candidates
+    Scheduler ..> Owner : reads all pet tasks
     Scheduler ..> DailyPlan : generates
     CareTask --> Priority : has
+    CareTask --> Frequency : repeats
