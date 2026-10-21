@@ -239,4 +239,6 @@ Run the app with `streamlit run app.py`, then follow these steps:
 8. **Build a daily schedule.** Open the **Daily schedule** tab, choose who to plan for (the selected pet, or **All pets**), a plan date and how many minutes you have, and press **Generate**. To see another pet's schedule, select that pet in the sidebar and press **Generate** again.
 9. **Read the plan.** The heading names the pet (or all pets) the plan is for. You see the planned, available and left-over minutes with a progress bar, then one card per scheduled task with the reason it was chosen. Tasks that did not fit are listed under "Still needs time", and any overlapping start times that day are flagged with a warning.
 
-**Screenshot or video** *(optional)*: add a screenshot here, for example `![PawPal+ app](diagrams/app-video.gif)`.
+**Demo video:**
+
+<img src="diagrams/app-video.gif" alt="PawPal+ app demo" width="800">
