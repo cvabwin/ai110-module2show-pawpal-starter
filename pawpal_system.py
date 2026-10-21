@@ -782,14 +782,28 @@ class Scheduler:
         Raises:
             KeyError: If no task has the given ID.
         """
+        if not isinstance(owner, Owner):
+            raise TypeError("owner must be an Owner")
         task = next((t for t in owner.get_all_tasks() if t.id == task_id), None)
         if task is None:
             raise KeyError(f"No task found with ID: {task_id}")
         if task.frequency is Frequency.ONCE:
+            if task.is_complete:
+                raise ValueError("Task is already complete")
             task.mark_complete()
             return None
 
-        occurrence_date = occurrence_date or date.today()
+        if occurrence_date is None:
+            occurrence_date = date.today()
+            if task.scheduled_date and occurrence_date < task.scheduled_date:
+                occurrence_date = task.scheduled_date
+        elif not isinstance(occurrence_date, date):
+            raise TypeError("occurrence_date must be a date")
+        if not task.is_scheduled_for_date(occurrence_date):
+            raise ValueError(
+                f"Task is not due on {occurrence_date}, or is already complete"
+            )
+
         step = timedelta(days=1 if task.frequency is Frequency.DAILY else 7)
         next_task = CareTask(
             title=task.title,
@@ -800,33 +814,50 @@ class Scheduler:
             frequency=task.frequency,
             start_time=task.start_time,
         )
+        # Add the successor first so a failure leaves the original untouched.
+        owner.get_pet(task.pet_id).add_task(next_task)
         # Retire the finished occurrence as a completed one-time record so the
-        # new task is the only active copy of the recurring series.
+        # new task is the only active copy of the recurring series. Progress
+        # recorded for other dates stays in completed_by_date.
+        task.completed_by_date[occurrence_date] = task.duration_minutes
         task.frequency = Frequency.ONCE
         task.scheduled_date = occurrence_date
-        task.completed_by_date = {}
         task.completed_minutes = task.duration_minutes
-        owner.get_pet(task.pet_id).add_task(next_task)
         return next_task
 
-    def detect_conflicts(self, owner: Owner) -> list[str]:
+    def detect_conflicts(
+        self, owner: Owner, task_date: Optional[date] = None
+    ) -> list[str]:
         """Return warnings for tasks sharing a date and start time.
 
         Lightweight check: groups incomplete, timed tasks by (scheduled_date,
-        start_time) in a single pass and reports any group of two or more. Each
-        message says whether the clash is for the "same pet" or "different
-        pets". Never raises; returns an empty list when there are no conflicts.
-        Task durations are not compared, only exact start times.
+        start_time) in a single pass and reports any group of two or more. If
+        task_date is given, instead checks the tasks due on that date (so
+        recurring tasks are compared on their effective day). Each message says
+        whether the clash is for the "same pet" or "different pets". Returns an
+        empty list when there are no conflicts. Task durations are not
+        compared, only exact start times.
         """
+        if not isinstance(owner, Owner):
+            raise TypeError("owner must be an Owner")
+        if task_date is not None and not isinstance(task_date, date):
+            raise TypeError("task_date must be a date or None")
         slots: defaultdict[tuple[Optional[date], str], list[tuple[str, str]]] = (
             defaultdict(list)
         )
         for pet in owner.pets:
             for task in pet.care_tasks:
-                if task.start_time is not None and not task.is_complete:
-                    slots[(task.scheduled_date, task.start_time)].append(
-                        (pet.name, task.title)
-                    )
+                if task.start_time is None:
+                    continue
+                if task_date is not None:
+                    if not task.is_scheduled_for_date(task_date):
+                        continue
+                    key = (task_date, task.start_time)
+                elif task.is_complete:
+                    continue
+                else:
+                    key = (task.scheduled_date, task.start_time)
+                slots[key].append((pet.name, task.title))
 
         warnings = []
         for (slot_date, start), entries in slots.items():

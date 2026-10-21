@@ -5,7 +5,14 @@ import streamlit as st
 from pawpal_system import CareTask, Frequency, Owner, Pet, Scheduler
 
 
-st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
+st.set_page_config(
+    page_title="PawPal+",
+    page_icon=":material/pets:",
+    layout="wide",
+)
+
+PRIORITY_COLORS = {"high": "red", "medium": "orange", "low": "green"}
+SPECIES_ICONS = {"dog": ":material/pets:", "cat": ":material/cruelty_free:"}
 
 if "owner" not in st.session_state:
     st.session_state.owner = Owner(name="Jordan")
@@ -13,146 +20,273 @@ if "owner" not in st.session_state:
 owner: Owner = st.session_state.owner
 scheduler = Scheduler()
 
-st.title("🐾 PawPal+")
-st.caption(f"Care planning for {owner.name} and their pets")
 
-st.subheader("Add a Pet")
-with st.form("add_pet_form", clear_on_submit=True):
-    pet_name = st.text_input("Pet name")
-    species = st.selectbox("Species", ["dog", "cat", "other"])
-    add_pet_submitted = st.form_submit_button("Add pet")
+def priority_badge(priority: str) -> str:
+    return f":{PRIORITY_COLORS[priority]}-badge[{priority.capitalize()}]"
 
-if add_pet_submitted:
-    try:
-        pet = Pet(name=pet_name, species=species)
-        owner.add_pet(pet)
-        st.session_state.selected_pet_id = pet.id
-        st.session_state.pop("generated_plan", None)
-        st.success(f"Added {pet.name}.")
-    except ValueError as error:
-        st.error(str(error))
 
-if not owner.pets:
-    st.info("Add a pet to start building a care plan.")
+def find_pet(pet_id: str) -> Pet:
+    return owner.get_pet(pet_id)
+
+
+def describe_when(task: CareTask) -> str:
+    parts = [task.frequency.value.capitalize()]
+    if task.start_time:
+        parts.append(f"at {task.start_time}")
+    if task.scheduled_date:
+        parts.append(f"from {task.scheduled_date:%b %d}")
+    return " · ".join(parts)
+
+
+# --- Sidebar: pets ------------------------------------------------------------
+
+with st.sidebar:
+    st.title("PawPal+", icon=":material/pets:")
+    st.caption(f"Care planning for {owner.name}")
+
+    st.subheader("Add a pet", icon=":material/add_circle:")
+    with st.form("add_pet_form", clear_on_submit=True, border=False):
+        pet_name = st.text_input("Pet name", placeholder="Mochi")
+        species = st.segmented_control(
+            "Species", ["dog", "cat", "other"], default="dog", format_func=str.capitalize
+        )
+        add_pet_submitted = st.form_submit_button(
+            "Add pet", icon=":material/add:", width="stretch"
+        )
+
+    if add_pet_submitted:
+        try:
+            new_pet = Pet(name=pet_name, species=species or "other")
+            owner.add_pet(new_pet)
+            st.session_state.selected_pet_id = new_pet.id
+            st.session_state.pop("generated_plan", None)
+            st.toast(f"Added {new_pet.name}", icon=":material/check_circle:")
+        except ValueError as error:
+            st.error(str(error))
+
+    selected_pet = None
+    if owner.pets:
+        st.subheader("Your pets", icon=":material/favorite:")
+        pet_ids = [pet.id for pet in owner.pets]
+        selected_pet_id = st.radio(
+            "Select a pet",
+            pet_ids,
+            index=(
+                pet_ids.index(st.session_state.selected_pet_id)
+                if st.session_state.get("selected_pet_id") in pet_ids
+                else 0
+            ),
+            format_func=lambda pet_id: (
+                f"{find_pet(pet_id).name} · {len(find_pet(pet_id).care_tasks)} tasks"
+            ),
+            label_visibility="collapsed",
+        )
+        selected_pet = find_pet(selected_pet_id)
+        st.session_state.selected_pet_id = selected_pet.id
+
+# --- Header ---------------------------------------------------------------------
+
+st.title("Today with your pets", icon=":material/pets:")
+
+if selected_pet is None:
+    st.info(
+        "Add your first pet in the sidebar to start building a care plan.",
+        title="Welcome to PawPal+",
+        icon=":material/waving_hand:",
+    )
     st.stop()
 
-pet_ids = [pet.id for pet in owner.pets]
-selected_pet_id = st.selectbox(
-    "Select a pet",
-    pet_ids,
-    index=(
-        pet_ids.index(st.session_state.selected_pet_id)
-        if st.session_state.get("selected_pet_id") in pet_ids
-        else 0
-    ),
-    format_func=lambda pet_id: next(
-        f"{pet.name} ({pet.species})" for pet in owner.pets if pet.id == pet_id
-    ),
+today = date.today()
+all_tasks = owner.get_all_tasks()
+due_today = [task for task in all_tasks if task.is_scheduled_for_date(today)]
+
+metric_cols = st.columns(3)
+metric_cols[0].metric("Pets", len(owner.pets), border=True)
+metric_cols[1].metric("Care tasks", len(all_tasks), border=True)
+metric_cols[2].metric("Due today", len(due_today), border=True)
+
+tasks_tab, schedule_tab = st.tabs(
+    [":material/checklist: Tasks", ":material/calendar_month: Daily schedule"]
 )
-selected_pet = owner.get_pet(selected_pet_id)
-st.session_state.selected_pet_id = selected_pet.id
 
-st.subheader(f"Add a Task for {selected_pet.name}")
-with st.form("add_task_form", clear_on_submit=True):
-    task_title = st.text_input("Task title")
-    duration_minutes = st.number_input(
-        "Duration (minutes)", min_value=1, max_value=240, value=20
-    )
-    priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
-    frequency_value = st.selectbox(
-        "Frequency",
-        [frequency.value for frequency in Frequency],
-        format_func=lambda value: value.capitalize(),
-    )
-    scheduled_date = st.date_input("Start or scheduled date", value=date.today())
-    is_splittable = st.checkbox("Allow this task to be split", value=True)
-    add_task_submitted = st.form_submit_button("Add task")
+# --- Tasks tab ------------------------------------------------------------------
 
-if add_task_submitted:
-    try:
-        selected_pet.add_task(
-            CareTask(
-                title=task_title,
-                duration_minutes=int(duration_minutes),
-                priority=priority,
-                frequency=frequency_value,
-                scheduled_date=scheduled_date,
-                is_splittable=is_splittable,
+with tasks_tab:
+    with st.container(border=True):
+        st.subheader(f"Add a task for {selected_pet.name}", icon=":material/add_task:")
+        with st.form("add_task_form", clear_on_submit=True, border=False):
+            title_col, duration_col = st.columns([3, 1])
+            task_title = title_col.text_input("Task title", placeholder="Morning walk")
+            duration_minutes = duration_col.number_input(
+                "Duration (min)", min_value=1, max_value=240, value=20
             )
+
+            priority_col, frequency_col, date_col, time_col = st.columns(4)
+            priority = priority_col.segmented_control(
+                "Priority",
+                ["low", "medium", "high"],
+                default="medium",
+                format_func=str.capitalize,
+            )
+            frequency_value = frequency_col.segmented_control(
+                "Frequency",
+                [frequency.value for frequency in Frequency],
+                default=Frequency.ONCE.value,
+                format_func=str.capitalize,
+            )
+            scheduled_date = date_col.date_input("Start date", value=today)
+            start_time = time_col.time_input(
+                "Start time (optional)", value=None, step=300
+            )
+
+            split_col, submit_col = st.columns([3, 1], vertical_alignment="bottom")
+            is_splittable = split_col.toggle("Allow this task to be split", value=True)
+            add_task_submitted = submit_col.form_submit_button(
+                "Add task",
+                icon=":material/add:",
+                type="primary",
+                width="stretch",
+            )
+
+    if add_task_submitted:
+        try:
+            selected_pet.add_task(
+                CareTask(
+                    title=task_title,
+                    duration_minutes=int(duration_minutes),
+                    priority=priority or "medium",
+                    frequency=frequency_value or Frequency.ONCE.value,
+                    scheduled_date=scheduled_date,
+                    is_splittable=is_splittable,
+                    start_time=start_time.strftime("%H:%M") if start_time else None,
+                )
+            )
+            st.session_state.pop("generated_plan", None)
+            st.toast(
+                f"Added {task_title.strip()} for {selected_pet.name}",
+                icon=":material/check_circle:",
+            )
+            st.rerun()
+        except (TypeError, ValueError) as error:
+            st.error(str(error), icon=":material/error:")
+
+    conflicts = scheduler.detect_conflicts(owner)
+    if conflicts:
+        st.warning(
+            "\n".join(f"- {message}" for message in conflicts),
+            title="Scheduling conflicts",
+            icon=":material/warning:",
         )
-        st.session_state.pop("generated_plan", None)
-        st.success(f"Added {task_title.strip()} for {selected_pet.name}.")
-    except (TypeError, ValueError) as error:
-        st.error(str(error))
 
-st.subheader("Pets and Care Tasks")
-for pet in owner.pets:
-    with st.expander(f"{pet.name} ({pet.species})", expanded=pet.id == selected_pet.id):
-        if pet.care_tasks:
-            st.table(
-                [
-                    {
-                        "Task": task.title,
-                        "Duration (min)": task.duration_minutes,
-                        "Priority": task.priority.value,
-                        "Frequency": task.frequency.value,
-                        "Scheduled date": (
-                            task.scheduled_date.isoformat()
-                            if task.scheduled_date
-                            else "Any eligible day"
-                        ),
-                        "Status": (
-                            "Complete"
-                            if task.is_complete
-                            or task.is_complete_for_date(date.today())
-                            else "In progress"
-                        ),
-                    }
-                    for task in pet.care_tasks
-                ]
+    st.subheader(f"{selected_pet.name}'s tasks", icon=":material/pets:")
+    open_tasks = [task for task in selected_pet.care_tasks if not task.is_complete]
+    done_tasks = [task for task in selected_pet.care_tasks if task.is_complete]
+
+    if not selected_pet.care_tasks:
+        st.caption("No care tasks yet. Add one above.")
+
+    for task in scheduler.sort_by_time(open_tasks):
+        with st.container(border=True):
+            info_col, action_col = st.columns([5, 1], vertical_alignment="center")
+            with info_col:
+                st.markdown(
+                    f"**{task.title}** &nbsp; {priority_badge(task.priority.value)}"
+                )
+                st.caption(
+                    f":material/timer: {task.duration_minutes} min · "
+                    f"{describe_when(task)}"
+                    + ("" if task.is_splittable else " · not splittable")
+                )
+            if action_col.button(
+                "Done",
+                key=f"done_{task.id}",
+                icon=":material/check:",
+                width="stretch",
+            ):
+                try:
+                    scheduler.complete_task(
+                        owner,
+                        task.id,
+                        task.scheduled_date
+                        if task.frequency is not Frequency.ONCE
+                        else None,
+                    )
+                    st.session_state.pop("generated_plan", None)
+                    st.toast(f"Completed {task.title}", icon=":material/celebration:")
+                    st.rerun()
+                except (KeyError, ValueError) as error:
+                    st.error(str(error))
+
+    if done_tasks:
+        with st.expander(f"Completed ({len(done_tasks)})", icon=":material/task_alt:"):
+            for task in done_tasks:
+                st.markdown(f"~~{task.title}~~ · {task.duration_minutes} min")
+
+# --- Schedule tab ---------------------------------------------------------------
+
+with schedule_tab:
+    with st.container(border=True):
+        plan_cols = st.columns([2, 2, 1], vertical_alignment="bottom")
+        plan_date = plan_cols[0].date_input("Plan date", value=today)
+        available_minutes = plan_cols[1].number_input(
+            "Available time (minutes)", min_value=1, max_value=1440, value=120, step=5
+        )
+        if plan_cols[2].button(
+            "Generate",
+            icon=":material/auto_awesome:",
+            type="primary",
+            width="stretch",
+        ):
+            st.session_state.generated_plan = scheduler.generate_plan(
+                owner=owner,
+                task_date=plan_date,
+                available_minutes=int(available_minutes),
             )
-        else:
-            st.info("No care tasks added for this pet yet.")
 
-st.subheader("Build Today's Schedule")
-available_minutes = st.number_input(
-    "Available time today (minutes)",
-    min_value=1,
-    max_value=1440,
-    value=120,
-    step=5,
-)
-plan_date = st.date_input("Plan date", value=date.today())
-
-if st.button("Generate schedule"):
-    st.session_state.generated_plan = scheduler.generate_plan(
-        owner=owner,
-        task_date=plan_date,
-        available_minutes=int(available_minutes),
-    )
-
-plan = st.session_state.get("generated_plan")
-if plan is not None:
-    st.markdown(f"### Schedule for {plan.date:%B %d, %Y}")
-    if plan.scheduled_items:
-        for item in plan.scheduled_items:
-            task_pet = next(
-                pet for pet in owner.pets if pet.id == item.task.pet_id
-            )
-            st.markdown(
-                f"- **{item.task.title}** for {task_pet.name} — "
-                f"{item.planned_minutes} min ({item.task.priority.value} priority)"
-            )
-            st.caption(item.get_explanation())
+    plan = st.session_state.get("generated_plan")
+    if plan is None:
+        st.caption("Pick a date and your available time, then generate a schedule.")
     else:
-        st.info("No eligible tasks are scheduled for this date.")
-    st.caption(
-        f"Planned {plan.total_planned_minutes} of "
-        f"{plan.available_minutes} available minutes."
-    )
-    unscheduled = plan.get_unscheduled_tasks()
-    if unscheduled:
-        st.markdown("**Still needs time or completion:**")
-        for task in unscheduled:
-            pet = next(pet for pet in owner.pets if pet.id == task.pet_id)
-            st.write(f"- {task.title} ({pet.name})")
+        st.subheader(f"Schedule for {plan.date:%A, %B %d}", icon=":material/event:")
+
+        used = plan.total_planned_minutes
+        plan_metrics = st.columns(3)
+        plan_metrics[0].metric("Planned", f"{used} min", border=True)
+        plan_metrics[1].metric("Available", f"{plan.available_minutes} min", border=True)
+        plan_metrics[2].metric("Left over", f"{plan.get_remaining_time()} min", border=True)
+        st.progress(
+            min(used / plan.available_minutes, 1.0),
+            text=f"{used} of {plan.available_minutes} minutes used",
+        )
+
+        plan_conflicts = scheduler.detect_conflicts(owner, plan.date)
+        if plan_conflicts:
+            st.warning(
+                "\n".join(f"- {message}" for message in plan_conflicts),
+                title="Heads up: overlapping start times",
+                icon=":material/warning:",
+            )
+
+        if plan.scheduled_items:
+            for item in plan.scheduled_items:
+                task_pet = find_pet(item.task.pet_id)
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{item.task.title}** for {task_pet.name} &nbsp; "
+                        f"{priority_badge(item.task.priority.value)} "
+                        f":gray-badge[{item.planned_minutes} min]"
+                    )
+                    st.caption(item.get_explanation())
+        else:
+            st.info(
+                "No eligible tasks are scheduled for this date.",
+                icon=":material/event_busy:",
+            )
+
+        unscheduled = plan.get_unscheduled_tasks()
+        if unscheduled:
+            with st.expander(
+                f"Still needs time ({len(unscheduled)})", icon=":material/pending:"
+            ):
+                for task in unscheduled:
+                    st.markdown(f"- {task.title} ({find_pet(task.pet_id).name})")

@@ -82,6 +82,17 @@ Sample test output:
 
 ```
 # Paste your pytest output here
+# Test covers sorting, recurrence, and conflict detection. Confidence Level: 5 stars
+python -m pytest
+platform win32 -- Python 3.13.16, pytest-9.1.1, pluggy-1.7.0
+rootdir: C:\Users\cvabw\OneDrive\_Codepath\AI 110\Unit5\ai110-module2show-pawpal-starter
+plugins: anyio-4.15.1
+collected 31 items                                                                        
+
+test_pawpal_system.py .........                                                     [ 29%]
+tests\test_pawpal.py ......................                                         [100%]
+
+=================================== 31 passed in 0.26s ===================================
 ```
 
 ## 📐 Smarter Scheduling
