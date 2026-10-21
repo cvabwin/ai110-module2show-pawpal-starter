@@ -301,3 +301,167 @@ def test_detect_conflicts_on_date_flags_recurring_vs_one_time() -> None:
 
     assert Scheduler().detect_conflicts(owner) == []
     assert len(Scheduler().detect_conflicts(owner, DAY)) == 1
+
+
+# --- Priority-first scheduling -----------------------------------------------
+
+
+def _plan_titles(*tasks: CareTask, minutes: int = 120) -> list[str]:
+    pet = Pet(name="Mochi", species="dog", care_tasks=list(tasks))
+    plan = Scheduler().generate_plan(make_owner(pet), DAY, available_minutes=minutes)
+    return [item.task.title for item in plan.scheduled_items]
+
+
+def test_plan_orders_by_priority_before_time() -> None:
+    titles = _plan_titles(
+        CareTask("Early low", 10, "low", start_time="06:00"),
+        CareTask("Late high", 10, "high", start_time="20:00"),
+        CareTask("Mid medium", 10, "medium", start_time="12:00"),
+    )
+
+    assert titles == ["Late high", "Mid medium", "Early low"]
+
+
+def test_plan_orders_same_priority_by_start_time_untimed_last() -> None:
+    titles = _plan_titles(
+        CareTask("Untimed", 10, "high"),
+        CareTask("Evening", 10, "high", start_time="18:00"),
+        CareTask("Morning", 10, "high", start_time="07:00"),
+    )
+
+    assert titles == ["Morning", "Evening", "Untimed"]
+
+
+def test_high_priority_is_not_displaced_by_shorter_low_priority() -> None:
+    titles = _plan_titles(
+        CareTask("Quick low", 1, "low", is_splittable=False),
+        CareTask("Long high", 16, "high", is_splittable=False),
+        minutes=16,
+    )
+
+    assert titles == ["Long high"]
+
+
+# --- CLI formatting ----------------------------------------------------------
+
+
+def test_task_emoji_uses_title_keywords_with_default() -> None:
+    from cli_format import DEFAULT_TASK_EMOJI, task_emoji
+
+    assert task_emoji(CareTask("Morning walk", 10)) == "🦮"
+    assert task_emoji(CareTask("Vet call", 10)) == "💊"
+    assert task_emoji(CareTask("Cuddles", 10)) == DEFAULT_TASK_EMOJI
+
+
+def test_conflict_lines_reports_success_or_warnings() -> None:
+    from cli_format import conflict_lines
+
+    assert "No scheduling conflicts" in conflict_lines([])
+    assert "Conflict A" in conflict_lines(["Conflict A"])
+
+
+def test_tasks_table_contains_task_pet_and_priority(monkeypatch) -> None:
+    from cli_format import tasks_table
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    pet = Pet(name="Mochi", species="dog")
+    task = CareTask("Walk", 20, "high", start_time="07:30")
+    pet.add_task(task)
+
+    table = tasks_table(make_owner(pet), [task])
+
+    assert "Walk" in table and "Mochi" in table and "High" in table and "07:30" in table
+
+
+# --- Per-pet planning --------------------------------------------------------
+
+
+def test_generate_plan_can_be_limited_to_one_pet() -> None:
+    mochi = Pet(name="Mochi", species="dog")
+    pepper = Pet(name="Pepper", species="cat")
+    mochi.add_task(CareTask("Walk", 10, scheduled_date=DAY))
+    pepper.add_task(CareTask("Feed", 10, scheduled_date=DAY))
+    owner = make_owner(mochi, pepper)
+
+    both = Scheduler().generate_plan(owner, DAY)
+    only_pepper = Scheduler().generate_plan(owner, DAY, pet_id=pepper.id)
+
+    assert {i.task.title for i in both.scheduled_items} == {"Walk", "Feed"}
+    assert [i.task.title for i in only_pepper.scheduled_items] == ["Feed"]
+    assert [t.title for t in only_pepper.candidate_tasks] == ["Feed"]
+
+
+def test_generate_plan_unknown_pet_raises_key_error() -> None:
+    with pytest.raises(KeyError):
+        Scheduler().generate_plan(make_owner(Pet(name="Mochi", species="dog")), DAY, pet_id="nope")
+
+
+# --- Resolving conflicts -----------------------------------------------------
+
+
+def _two_pet_clash() -> tuple[Owner, CareTask, CareTask]:
+    mochi = Pet(name="Mochi", species="dog")
+    biscuit = Pet(name="Biscuit", species="cat")
+    a = CareTask("Breakfast", 10, scheduled_date=DAY, start_time="08:00")
+    b = CareTask("Feeding", 10, scheduled_date=DAY, start_time="08:00")
+    mochi.add_task(a)
+    biscuit.add_task(b)
+    return make_owner(mochi, biscuit), a, b
+
+
+def test_find_conflicts_returns_structured_conflict() -> None:
+    owner, a, b = _two_pet_clash()
+
+    (conflict,) = Scheduler().find_conflicts(owner)
+
+    assert conflict.start_time == "08:00"
+    assert conflict.slot_date == DAY
+    assert conflict.scope == "different pets"
+    assert conflict.tasks == [a, b]
+    assert conflict.message == Scheduler().detect_conflicts(owner)[0]
+
+
+def test_allow_simultaneous_clears_the_conflict() -> None:
+    owner, a, b = _two_pet_clash()
+    scheduler = Scheduler()
+
+    scheduler.allow_simultaneous(scheduler.find_conflicts(owner)[0])
+
+    assert a.can_overlap and b.can_overlap
+    assert scheduler.detect_conflicts(owner) == []
+    assert scheduler.detect_conflicts(owner, DAY) == []
+
+
+def test_conflict_returns_when_a_new_task_joins_an_allowed_slot() -> None:
+    owner, a, b = _two_pet_clash()
+    scheduler = Scheduler()
+    scheduler.allow_simultaneous(scheduler.find_conflicts(owner)[0])
+    owner.pets[0].add_task(
+        CareTask("Meds", 5, scheduled_date=DAY, start_time="08:00")
+    )
+
+    (conflict,) = scheduler.find_conflicts(owner)
+
+    assert len(conflict.tasks) == 3
+
+
+def test_deleting_one_conflicting_task_clears_the_conflict() -> None:
+    owner, a, b = _two_pet_clash()
+
+    owner.get_pet(a.pet_id).remove_task(a.id)
+
+    assert Scheduler().find_conflicts(owner) == []
+
+
+def test_can_overlap_is_validated_and_copied_to_next_occurrence() -> None:
+    with pytest.raises(TypeError):
+        CareTask("Feed", 10, can_overlap="yes")
+    task = CareTask(
+        "Feed", 10, frequency=Frequency.DAILY, scheduled_date=DAY, can_overlap=True
+    )
+    pet = Pet(name="Mochi", species="dog")
+    pet.add_task(task)
+
+    next_task = Scheduler().complete_task(make_owner(pet), task.id, DAY)
+
+    assert next_task.can_overlap is True

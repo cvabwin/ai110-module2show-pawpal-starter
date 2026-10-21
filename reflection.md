@@ -31,8 +31,9 @@ The design evolved to link each plan to an owner, enforce exclusive pet/task own
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+The scheduler considers four constraints: the owner's available time for the day, task priority, task duration, and owner preferences. It also respects whether a task can be split and whether it is due on the chosen date (one-time, daily, or weekly). Eligible tasks are ranked by priority first, then owner preference, then start time, then shorter duration, and filled in that order until the time runs out.
+
+I treated available time as a hard limit, because a plan that exceeds the owner's day is useless. Priority came next, since missing a medication matters more than missing enrichment. Start time and duration are softer factors that only break ties within a priority. Preferences work the same way, so they can nudge the order but never push out an important task.
 
 **b. Tradeoffs**
 
@@ -55,7 +56,7 @@ I used AI to clarify requirements and edge cases, draft the UML and backend clas
 
 **b. Judgment and verification**
 
-AI initially described a pet-specific plan, but the multi-pet requirement meant that plan needed to cover an owner's tasks across pets. I changed the design so `Scheduler` calls `Owner.get_all_tasks()` and the plan identifies its owner. I also kept the scope as a daily scheduler rather than expanding it into a full weekly planner. I verified the choices with tests for multi-pet scheduling, task completion, rescheduling, recurring occurrences, and time limits; all 11 tests passed. Running `python main.py` also confirmed the sample terminal schedule.
+AI initially described a pet-specific plan, but the multi-pet requirement meant that plan needed to cover an owner's tasks across pets. I changed the design so `Scheduler` calls `Owner.get_all_tasks()` and the plan identifies its owner. I also kept the scope as a daily scheduler rather than expanding it into a full weekly planner. I verified the choices with tests for multi-pet scheduling, task completion, rescheduling, recurring occurrences, and time limits; all 31 tests passed. Running `python main.py` also confirmed the sample terminal schedule.
 
 ---
 
@@ -63,13 +64,20 @@ AI initially described a pet-specific plan, but the multi-pet requirement meant 
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+I tested task validation and completion, adding tasks to a pet, multi-pet scheduling, the available-time limit, partial and non-splittable tasks, and owner preferences. I also tested the later features: sorting tasks by start time (including untimed tasks and an empty list), conflict detection (same pet, different pets, different times, completed tasks, no tasks), and recurring tasks (a daily task creating the next day's task, weekly after seven days, a year-end rollover, and an unknown task ID). The suite has 31 tests, and all pass.
+
+These tests matter because the scheduler is mostly rules that interact: dates, priorities, progress and time limits. A small mistake in one place can silently produce a wrong plan, so I wanted each rule pinned down by a test that fails loudly.
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+I am fairly confident in the core behaviors, because the tests cover the happy paths and the main edge cases and a code review helped find real bugs. I am less confident about unusual combinations, such as changing a task's frequency after it has progress, or conflicts between tasks that overlap but start at different times.
+
+With more time I would test:
+- overlapping durations in conflict detection (for example, 09:00 for 60 minutes versus a task at 09:30);
+- changing a task from one-time to recurring or back;
+- completing a recurring task on a day it isn't due;
+- passing a `datetime` where a `date` is expected;
+- planning the same day twice, since planning pins an undated one-time task to that day.
 
 ---
 
@@ -77,12 +85,12 @@ AI initially described a pet-specific plan, but the multi-pet requirement meant 
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+I am most satisfied with how the backend and the app fit together. The scheduling logic lives in one place, `Scheduler`, and the Streamlit app only calls it for sorting, filtering, conflict warnings, completing recurring tasks, and building the plan. Because the logic was separate from the interface, I could test it directly and then redesign the screen without touching the rules.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+I would change two more things. First, conflict detection should compare durations, not just exact start times, so a 09:00 task that runs 60 minutes clashes with one at 09:30. Second, planning currently pins an undated one-time task to the plan date, so a preview plan can permanently bind it to that day; I would make planning leave tasks unchanged and let the user schedule explicitly. I already fixed an earlier weakness: the original scoring favored short tasks, so a low-priority 1-minute task could outrank a high-priority 16-minute one, and I changed the ranking to priority first, then time.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+Designing the data and rules first made everything after it easier, but AI-generated code still needs independent review. A code review of the finished scheduler found real bugs, including lost progress when a recurring task was completed and a completion order that could leave a task half-changed. I learned to treat AI output as a draft, to ask for concrete edge cases, and to turn each one into a test so that I can trust the code instead of assuming it works.

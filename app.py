@@ -140,7 +140,11 @@ with tasks_tab:
             )
 
             split_col, submit_col = st.columns([3, 1], vertical_alignment="bottom")
-            is_splittable = split_col.toggle("Allow this task to be split", value=True)
+            with split_col:
+                is_splittable = st.toggle("Allow this task to be split", value=True)
+                can_overlap = st.toggle(
+                    "Can be done at the same time as other tasks", value=False
+                )
             add_task_submitted = submit_col.form_submit_button(
                 "Add task",
                 icon=":material/add:",
@@ -158,6 +162,7 @@ with tasks_tab:
                     frequency=frequency_value or Frequency.ONCE.value,
                     scheduled_date=scheduled_date,
                     is_splittable=is_splittable,
+                    can_overlap=can_overlap,
                     start_time=start_time.strftime("%H:%M") if start_time else None,
                 )
             )
@@ -170,12 +175,76 @@ with tasks_tab:
         except (TypeError, ValueError) as error:
             st.error(str(error), icon=":material/error:")
 
-    conflicts = scheduler.detect_conflicts(owner)
-    if conflicts:
-        st.warning(
-            "\n".join(f"- {message}" for message in conflicts),
-            title="Scheduling conflicts",
-            icon=":material/warning:",
+    conflicts = scheduler.find_conflicts(owner)
+    for conflict_index, conflict in enumerate(conflicts):
+        with st.container(border=True):
+            st.warning(
+                conflict.message,
+                title="Scheduling conflict",
+                icon=":material/warning:",
+            )
+            slot_key = f"{conflict.slot_date}_{conflict.start_time}_{conflict_index}"
+            pending = next(
+                (
+                    (pet_name, task)
+                    for pet_name, task in conflict.entries
+                    if task.id == st.session_state.get("pending_delete")
+                ),
+                None,
+            )
+            if pending is not None:
+                pending_pet, pending_task = pending
+                st.markdown(
+                    f"**Delete {pending_task.title} ({pending_pet})?** "
+                    "This removes the task."
+                )
+                confirm_row = st.container(horizontal=True)
+                if confirm_row.button(
+                    "Yes, delete",
+                    key=f"confirm_{slot_key}",
+                    icon=":material/delete:",
+                    type="primary",
+                ):
+                    owner.get_pet(pending_task.pet_id).remove_task(pending_task.id)
+                    st.session_state.pop("pending_delete", None)
+                    st.session_state.pop("generated_plan", None)
+                    st.toast(f"Deleted {pending_task.title}", icon=":material/delete:")
+                    st.rerun()
+                if confirm_row.button(
+                    "Cancel", key=f"cancel_{slot_key}", icon=":material/close:"
+                ):
+                    st.session_state.pop("pending_delete", None)
+                    st.rerun()
+                continue
+
+            st.markdown("**Can these be done at the same time?**")
+            action_row = st.container(horizontal=True)
+            if action_row.button(
+                "Yes, same time",
+                key=f"allow_{slot_key}",
+                icon=":material/group:",
+                type="primary",
+            ):
+                scheduler.allow_simultaneous(conflict)
+                st.session_state.pop("generated_plan", None)
+                st.toast(
+                    f"Allowed overlapping tasks at {conflict.start_time}",
+                    icon=":material/check_circle:",
+                )
+                st.rerun()
+            for pet_name, task in conflict.entries:
+                if action_row.button(
+                    f"Delete {task.title} ({pet_name})",
+                    key=f"delete_{slot_key}_{task.id}",
+                    icon=":material/delete:",
+                ):
+                    st.session_state.pending_delete = task.id
+                    st.rerun()
+    if not conflicts and all_tasks:
+        st.success(
+            "No tasks share a start time, or overlaps are allowed.",
+            title="No scheduling conflicts",
+            icon=":material/check_circle:",
         )
 
     st.subheader(f"{selected_pet.name}'s tasks", icon=":material/pets:")
@@ -222,10 +291,55 @@ with tasks_tab:
             for task in done_tasks:
                 st.markdown(f"~~{task.title}~~ · {task.duration_minutes} min")
 
+    st.subheader("All tasks", icon=":material/filter_list:")
+    filter_cols = st.columns(2)
+    pet_filter = filter_cols[0].selectbox(
+        "Pet", ["All pets"] + [pet.name for pet in owner.pets]
+    )
+    status_filter = filter_cols[1].segmented_control(
+        "Status", ["All", "Open", "Done"], default="All"
+    )
+    completed_filter = {"Open": False, "Done": True}.get(status_filter)
+    matching = scheduler.filter_tasks(
+        owner,
+        pet_name=None if pet_filter == "All pets" else pet_filter,
+        completed=completed_filter,
+    )
+    if matching:
+        st.table(
+            [
+                {
+                    "Start": task.start_time or "Any time",
+                    "Task": task.title,
+                    "Pet": find_pet(task.pet_id).name,
+                    "Priority": task.priority.value.capitalize(),
+                    "Minutes": task.duration_minutes,
+                    "Repeats": task.frequency.value.capitalize(),
+                    "Status": "Done" if task.is_complete else "Open",
+                }
+                for task in scheduler.sort_by_time(matching)
+            ]
+        )
+        st.caption(f"{len(matching)} task(s), sorted by start time.")
+    else:
+        st.warning(
+            "Try a different pet or status.",
+            title="No tasks match these filters",
+            icon=":material/search_off:",
+        )
+
 # --- Schedule tab ---------------------------------------------------------------
 
 with schedule_tab:
     with st.container(border=True):
+        scope = st.segmented_control(
+            "Plan for",
+            [selected_pet.id, "all"],
+            default=selected_pet.id,
+            format_func=lambda value: (
+                "All pets" if value == "all" else selected_pet.name
+            ),
+        )
         plan_cols = st.columns([2, 2, 1], vertical_alignment="bottom")
         plan_date = plan_cols[0].date_input("Plan date", value=today)
         available_minutes = plan_cols[1].number_input(
@@ -237,17 +351,26 @@ with schedule_tab:
             type="primary",
             width="stretch",
         ):
+            plan_pet_id = None if scope == "all" else selected_pet.id
             st.session_state.generated_plan = scheduler.generate_plan(
                 owner=owner,
                 task_date=plan_date,
                 available_minutes=int(available_minutes),
+                pet_id=plan_pet_id,
+            )
+            st.session_state.generated_plan_label = (
+                "all pets" if plan_pet_id is None else selected_pet.name
             )
 
     plan = st.session_state.get("generated_plan")
     if plan is None:
         st.caption("Pick a date and your available time, then generate a schedule.")
     else:
-        st.subheader(f"Schedule for {plan.date:%A, %B %d}", icon=":material/event:")
+        st.subheader(
+            f"Schedule for {st.session_state.get('generated_plan_label', 'all pets')}"
+            f" · {plan.date:%A, %B %d}",
+            icon=":material/event:",
+        )
 
         used = plan.total_planned_minutes
         plan_metrics = st.columns(3)

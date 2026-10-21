@@ -6,7 +6,6 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from enum import Enum
-from math import sqrt
 from typing import Mapping, Optional, Sequence
 from uuid import uuid4
 
@@ -40,6 +39,7 @@ class CareTask:
     frequency: Frequency | str = Frequency.ONCE
     completed_by_date: dict[date, int] = field(default_factory=dict, repr=False)
     start_time: Optional[str] = None
+    can_overlap: bool = False
 
     def __post_init__(self) -> None:
         """Validate and normalize task fields after initialization."""
@@ -55,6 +55,8 @@ class CareTask:
         self.scheduled_date = self._validate_scheduled_date(self.scheduled_date)
         if not isinstance(self.is_splittable, bool):
             raise TypeError("is_splittable must be a bool")
+        if not isinstance(self.can_overlap, bool):
+            raise TypeError("can_overlap must be a bool")
         self.pet_id = self._validate_optional_id(self.pet_id, "Pet ID")
         self.start_time = self._validate_start_time(self.start_time)
         self.completed_by_date = self._validate_occurrence_progress(
@@ -195,6 +197,7 @@ class CareTask:
             "is_splittable",
             "frequency",
             "start_time",
+            "can_overlap",
         }
         unexpected_fields = set(updates) - allowed_fields
         if unexpected_fields:
@@ -208,6 +211,7 @@ class CareTask:
         new_is_splittable = self.is_splittable
         new_frequency = self.frequency
         new_start_time = self.start_time
+        new_can_overlap = self.can_overlap
 
         if "title" in updates:
             new_title = self._validate_title(updates["title"])
@@ -228,6 +232,10 @@ class CareTask:
 
         if "start_time" in updates:
             new_start_time = self._validate_start_time(updates["start_time"])
+        if "can_overlap" in updates:
+            new_can_overlap = updates["can_overlap"]
+            if not isinstance(new_can_overlap, bool):
+                raise TypeError("can_overlap must be a bool")
 
         if self.completed_minutes > new_duration or any(
             minutes > new_duration for minutes in self.completed_by_date.values()
@@ -243,6 +251,7 @@ class CareTask:
         self.is_splittable = new_is_splittable
         self.frequency = new_frequency
         self.start_time = new_start_time
+        self.can_overlap = new_can_overlap
 
     def mark_complete(self, occurrence_date: Optional[date] = None) -> None:
         """Mark a one-time task or dated recurring occurrence complete."""
@@ -572,13 +581,38 @@ class DailyPlan:
         ]
 
 
+@dataclass
+class Conflict:
+    """Two or more tasks that start at the same time on the same date."""
+
+    start_time: str
+    entries: list[tuple[str, CareTask]]
+    slot_date: Optional[date] = None
+
+    @property
+    def scope(self) -> str:
+        """Return "same pet" or "different pets"."""
+        return "same pet" if len({pet for pet, _ in self.entries}) == 1 else "different pets"
+
+    @property
+    def tasks(self) -> list[CareTask]:
+        """Return the conflicting tasks."""
+        return [task for _, task in self.entries]
+
+    @property
+    def message(self) -> str:
+        """Return a one-line warning describing the conflict."""
+        names = ", ".join(f"{pet}: {task.title}" for pet, task in self.entries)
+        when = f"{self.slot_date} " if self.slot_date else ""
+        return f"Conflict ({self.scope}) at {when}{self.start_time}: {names}"
+
+
 class Scheduler:
     priority_weights = {
         Priority.HIGH: 3.0,
         Priority.MEDIUM: 2.0,
         Priority.LOW: 1.0,
     }
-    preference_bonus = 1.1
 
     def generate_plan(
         self,
@@ -586,8 +620,14 @@ class Scheduler:
         task_date: date,
         available_minutes: Optional[int] = None,
         preferences: Optional[Mapping[str, object]] = None,
+        pet_id: Optional[str] = None,
     ) -> DailyPlan:
-        """Build an owner-wide daily plan using eligible tasks and priorities."""
+        """Build a daily plan, ranking by priority and then time.
+
+        Covers every pet's tasks unless pet_id is given, in which case only that
+        pet's tasks are planned against the time budget (KeyError if the pet is
+        not the owner's).
+        """
         if not isinstance(owner, Owner):
             raise TypeError("owner must be an Owner")
         if not isinstance(task_date, date):
@@ -604,6 +644,9 @@ class Scheduler:
 
         task_preferences = owner.preferences if preferences is None else preferences
         all_tasks = owner.get_all_tasks()
+        if pet_id is not None:
+            owner.get_pet(pet_id)
+            all_tasks = [task for task in all_tasks if task.pet_id == pet_id]
         candidates = [
             task for task in all_tasks if task.is_scheduled_for_date(task_date)
         ]
@@ -616,10 +659,7 @@ class Scheduler:
 
         ranked_tasks = sorted(
             enumerate(candidates),
-            key=lambda entry: (
-                -self.score_task(entry[1], task_preferences),
-                entry[0],
-            ),
+            key=lambda entry: (*self.rank_key(entry[1], task_preferences), entry[0]),
         )
 
         for _, task in ranked_tasks:
@@ -645,16 +685,27 @@ class Scheduler:
 
         return plan
 
-    def score_task(
+    def rank_key(
         self, task: CareTask, preferences: Optional[Mapping[str, object]] = None
-    ) -> float:
-        """Score a task by priority, duration, and matching preferences."""
+    ) -> tuple:
+        """Return the planning sort key: priority first, then time.
+
+        Tasks sort by priority (high before low), then owner-preferred tasks,
+        then start time (untimed tasks last), then shorter duration. Lower keys
+        are planned first.
+        """
         if not isinstance(task, CareTask):
             raise TypeError("task must be a CareTask")
-        score = self.priority_weights[task.priority] / sqrt(task.duration_minutes)
-        if preferences is not None and self._matches_preference(task, preferences):
-            score *= self.preference_bonus
-        return score
+        preferred = preferences is not None and self._matches_preference(
+            task, preferences
+        )
+        return (
+            -self.priority_weights[task.priority],
+            not preferred,
+            task.start_time is None,
+            task.start_time or "",
+            task.duration_minutes,
+        )
 
     def explain_decision(
         self,
@@ -813,6 +864,7 @@ class Scheduler:
             is_splittable=task.is_splittable,
             frequency=task.frequency,
             start_time=task.start_time,
+            can_overlap=task.can_overlap,
         )
         # Add the successor first so a failure leaves the original untouched.
         owner.get_pet(task.pet_id).add_task(next_task)
@@ -825,24 +877,22 @@ class Scheduler:
         task.completed_minutes = task.duration_minutes
         return next_task
 
-    def detect_conflicts(
+    def find_conflicts(
         self, owner: Owner, task_date: Optional[date] = None
-    ) -> list[str]:
-        """Return warnings for tasks sharing a date and start time.
+    ) -> list[Conflict]:
+        """Return tasks that share a date and start time.
 
-        Lightweight check: groups incomplete, timed tasks by (scheduled_date,
-        start_time) in a single pass and reports any group of two or more. If
-        task_date is given, instead checks the tasks due on that date (so
-        recurring tasks are compared on their effective day). Each message says
-        whether the clash is for the "same pet" or "different pets". Returns an
-        empty list when there are no conflicts. Task durations are not
-        compared, only exact start times.
+        Groups incomplete, timed tasks by (scheduled_date, start_time) in a
+        single pass. If task_date is given, instead checks the tasks due on that
+        date (so recurring tasks are compared on their effective day). A group
+        of two or more is a conflict, unless every task in it is marked
+        can_overlap. Task durations are not compared, only exact start times.
         """
         if not isinstance(owner, Owner):
             raise TypeError("owner must be an Owner")
         if task_date is not None and not isinstance(task_date, date):
             raise TypeError("task_date must be a date or None")
-        slots: defaultdict[tuple[Optional[date], str], list[tuple[str, str]]] = (
+        slots: defaultdict[tuple[Optional[date], str], list[tuple[str, CareTask]]] = (
             defaultdict(list)
         )
         for pet in owner.pets:
@@ -857,14 +907,22 @@ class Scheduler:
                     continue
                 else:
                     key = (task.scheduled_date, task.start_time)
-                slots[key].append((pet.name, task.title))
+                slots[key].append((pet.name, task))
 
-        warnings = []
-        for (slot_date, start), entries in slots.items():
-            if len(entries) < 2:
-                continue
-            scope = "same pet" if len({pet for pet, _ in entries}) == 1 else "different pets"
-            names = ", ".join(f"{pet}: {title}" for pet, title in entries)
-            when = f"{slot_date} " if slot_date else ""
-            warnings.append(f"Conflict ({scope}) at {when}{start}: {names}")
-        return warnings
+        return [
+            Conflict(start_time=start, entries=entries, slot_date=slot_date)
+            for (slot_date, start), entries in slots.items()
+            if len(entries) >= 2 and not all(task.can_overlap for _, task in entries)
+        ]
+
+    def detect_conflicts(
+        self, owner: Owner, task_date: Optional[date] = None
+    ) -> list[str]:
+        """Return a warning message for each conflict from find_conflicts."""
+        return [conflict.message for conflict in self.find_conflicts(owner, task_date)]
+
+    @staticmethod
+    def allow_simultaneous(conflict: Conflict) -> None:
+        """Mark every task in a conflict as able to run at the same time."""
+        for task in conflict.tasks:
+            task.update_details({"can_overlap": True})

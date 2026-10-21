@@ -1,19 +1,17 @@
+import sys
 from datetime import date, timedelta
 
+from cli_format import conflict_lines, plan_table, tasks_table
 from pawpal_system import CareTask, Owner, Pet, Scheduler
 
 
 def show(label: str, tasks: list[CareTask], owner: Owner) -> None:
     print(f"\n{label}")
-    for task in tasks:
-        print(
-            f"- {task.start_time or '--:--'} {owner.get_pet(task.pet_id).name}: "
-            f"{task.title} [{task.frequency.value}, "
-            f"{'done' if task.is_complete else 'open'}]"
-        )
+    print(tasks_table(owner, tasks))
 
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8")
     today = date.today()
     owner = Owner(name="Jordan")
     scheduler = Scheduler()
@@ -38,20 +36,14 @@ def main() -> None:
     mochi.add_task(CareTask("Breakfast", 10, "high", today, start_time="08:00"))
 
     plan = scheduler.generate_plan(owner, today)
-    print(f"Today's Schedule ({today:%B %d, %Y})")
-    for item in plan.scheduled_items:
-        print(
-            f"- {owner.get_pet(item.task.pet_id).name}: {item.task.title} "
-            f"({item.planned_minutes} min, {item.task.priority.value} priority)"
-        )
-    print(f"Total: {plan.total_planned_minutes}/{plan.available_minutes} minutes")
+    print(f"Today's Schedule ({today:%B %d, %Y}): priority first, then start time")
+    print(plan_table(owner, plan))
 
     show("All tasks sorted by time", scheduler.sort_by_time(owner.get_all_tasks()), owner)
     show("Mochi's tasks", scheduler.filter_tasks(owner, pet_name="Mochi"), owner)
 
     print("\nConflict warnings")
-    for warning in scheduler.detect_conflicts(owner):
-        print(f"! {warning}")
+    print(conflict_lines(scheduler.detect_conflicts(owner)))
 
     walk = next(t for t in mochi.care_tasks if t.title == "Morning walk")
     next_walk = scheduler.complete_task(owner, walk.id, today)

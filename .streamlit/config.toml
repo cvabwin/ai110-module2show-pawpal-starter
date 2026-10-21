@@ -1,0 +1,37 @@
+[theme]
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+baseRadius = "0.75rem"
+buttonRadius = "0.75rem"
+showWidgetBorder = true
+showSidebarBorder = true
+linkUnderline = false
+
+[theme.light]
+primaryColor = "#0f766e"
+backgroundColor = "#fffdf9"
+secondaryBackgroundColor = "#f3efe7"
+textColor = "#1f2933"
+borderColor = "#e2dccf"
+chartCategoricalColors = ["#0f766e", "#d97706", "#7c3aed", "#dc2626", "#2563eb", "#65a30d"]
+
+[theme.dark]
+primaryColor = "#0d9488"
+backgroundColor = "#11181c"
+secondaryBackgroundColor = "#1b252b"
+textColor = "#e8eef0"
+borderColor = "#2e3b42"
+chartCategoricalColors = ["#2dd4bf", "#fbbf24", "#a78bfa", "#f87171", "#60a5fa", "#a3e635"]
+
+[theme.light.sidebar]
+backgroundColor = "#f3efe7"
+secondaryBackgroundColor = "#e8e2d4"
+textColor = "#1f2933"
+borderColor = "#e2dccf"
+primaryColor = "#0f766e"
+
+[theme.dark.sidebar]
+backgroundColor = "#0c1215"
+secondaryBackgroundColor = "#1b252b"
+textColor = "#e8eef0"
+borderColor = "#2e3b42"
+primaryColor = "#0d9488"

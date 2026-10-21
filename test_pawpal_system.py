@@ -111,14 +111,14 @@ def test_owner_preferences_are_used_automatically() -> None:
         "Mochi",
         "dog",
         care_tasks=[
-            CareTask("Long walk", 10, Priority.HIGH),
-            CareTask("Preferred meal", 4, Priority.MEDIUM),
+            CareTask("Long walk", 10, Priority.MEDIUM),
+            CareTask("Preferred meal", 10, Priority.MEDIUM),
         ],
     )
     owner = Owner(
         "Jordan",
         pets=[pet],
-        preferences={"preferred_priorities": ["medium"]},
+        preferences={"preferred_task_titles": ["preferred meal"]},
     )
 
     plan = Scheduler().generate_plan(

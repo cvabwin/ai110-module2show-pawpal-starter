@@ -1,0 +1,137 @@
+classDiagram
+    class Owner {
+        +string id
+        +string name
+        +List~Pet~ pets
+        +Dict preferences
+        +add_pet(pet) void
+        +remove_pet(pet_id) void
+        +get_pet(pet_id) Pet
+        +get_all_tasks() List~CareTask~
+    }
+
+    class Pet {
+        +string id
+        +Owner? owner
+        +string name
+        +string species
+        +string? breed
+        +date? date_of_birth
+        +float? weight
+        +List~string~ allergies
+        +List~string~ medical_conditions
+        +List~CareTask~ care_tasks
+        +add_task(task) void
+        +edit_task(task_id, updates) void
+        +remove_task(task_id) void
+        +get_tasks_for_day(date) List~CareTask~
+    }
+
+    class CareTask {
+        +string id
+        +string title
+        +int duration_minutes
+        +Priority priority
+        +Frequency frequency
+        +date? scheduled_date
+        +string? start_time "HH:MM"
+        +bool can_overlap
+        +int completed_minutes
+        +Dict~date, int~ completed_by_date
+        +bool is_splittable
+        +string? pet_id
+        +bool is_complete [property]
+        +update_details(updates) void
+        +record_progress(minutes, occurrence_date) void
+        +mark_complete(occurrence_date) void
+        +get_remaining_minutes(occurrence_date) int
+        +is_complete_for_date(occurrence_date) bool
+        +is_scheduled_for_date(occurrence_date) bool
+    }
+
+    class DailyPlan {
+        +date date
+        +int available_minutes
+        +string? owner_id
+        +List~CareTask~ candidate_tasks
+        +List~ScheduledItem~ scheduled_items
+        +int total_planned_minutes [property]
+        +add_item(item) void
+        +get_remaining_time() int
+        +get_unscheduled_tasks() List~CareTask~
+    }
+
+    class ScheduledItem {
+        +CareTask task
+        +int planned_minutes
+        +string reason
+        +date? task_date
+        +int remaining_minutes_before_plan
+        +get_remaining_task_minutes() int
+        +get_explanation() string
+    }
+
+    class Scheduler {
+        +Dict priority_weights
+        +generate_plan(owner, task_date, available_minutes, preferences, pet_id) DailyPlan
+        +rank_key(task, preferences) tuple
+        +explain_decision(task, planned_minutes, preferences, task_date) string
+        +sort_by_time(tasks)$ List~CareTask~
+        +filter_tasks(owner, pet_name, completed)$ List~CareTask~
+        +complete_task(owner, task_id, occurrence_date) CareTask?
+        +find_conflicts(owner, task_date) List~Conflict~
+        +detect_conflicts(owner, task_date) List~string~
+        +allow_simultaneous(conflict)$ void
+    }
+
+    class Conflict {
+        +string start_time
+        +date? slot_date
+        +List entries "(pet name, CareTask)"
+        +string scope [property]
+        +List~CareTask~ tasks [property]
+        +string message [property]
+    }
+
+    class StreamlitApp {
+        <<app.py UI>>
+        +session_state.owner
+        +session_state.generated_plan
+    }
+
+    class Priority {
+        <<enumeration>>
+        low
+        medium
+        high
+    }
+
+    class Frequency {
+        <<enumeration>>
+        once
+        daily
+        weekly
+    }
+
+    Owner "1" o-- "0..*" Pet : owns exclusively
+    Pet "1" *-- "0..*" CareTask : has
+    Owner ..> CareTask : get_all_tasks
+    DailyPlan "1" *-- "0..*" ScheduledItem : contains
+    ScheduledItem "0..*" --> "1" CareTask : schedules
+    DailyPlan "1" o-- "0..*" CareTask : candidates
+    CareTask --> Priority : has
+    CareTask --> Frequency : repeats
+
+    Scheduler ..> Owner : reads pets and tasks
+    Scheduler ..> DailyPlan : generate_plan creates
+    Scheduler ..> ScheduledItem : generate_plan creates
+    Scheduler ..> CareTask : sorts, filters, ranks
+    Scheduler ..> CareTask : complete_task creates next occurrence
+    Scheduler ..> Pet : complete_task adds successor
+    Scheduler ..> Conflict : find_conflicts creates
+    Conflict o-- "2..*" CareTask : clashing tasks
+
+    StreamlitApp --> Owner : holds in session
+    StreamlitApp ..> Scheduler : sort, filter, conflicts, plan, complete
+    StreamlitApp ..> DailyPlan : displays
+    StreamlitApp ..> Conflict : asks to allow or delete
